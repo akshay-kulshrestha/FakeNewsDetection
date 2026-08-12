@@ -1,11 +1,23 @@
 import streamlit as st
 import torch
+
 from models.lstm_model import LSTMClassifier
+
+
+# -----------------------------
+# Configuration
+# -----------------------------
+
+EMBEDDING_DIM = 64
+HIDDEN_DIM = 128
+OUTPUT_DIM = 2
+MAX_LENGTH = 100
 
 
 # -----------------------------
 # Page configuration
 # -----------------------------
+
 st.set_page_config(
     page_title="Fake News Detection",
     page_icon="📰",
@@ -14,16 +26,32 @@ st.set_page_config(
 
 
 # -----------------------------
+# Load vocabulary
+# -----------------------------
+
+@st.cache_resource
+def load_vocab():
+
+    return torch.load(
+        "vocab.pth",
+        weights_only=False
+    )
+
+
+# -----------------------------
 # Load model
 # -----------------------------
+
 @st.cache_resource
 def load_model():
 
+    vocab = load_vocab()
+
     model = LSTMClassifier(
-        vocab_size=5000,
-        embedding_dim=64,
-        hidden_dim=128,
-        output_dim=1
+        vocab_size=len(vocab),
+        embed_dim=EMBEDDING_DIM,
+        hidden_dim=HIDDEN_DIM,
+        output_dim=OUTPUT_DIM
     )
 
     model.load_state_dict(
@@ -38,92 +66,119 @@ def load_model():
     return model
 
 
+vocab = load_vocab()
 model = load_model()
 
 
 # -----------------------------
-# Tokenizer
+# Text preprocessing
 # -----------------------------
-def simple_tokenizer(text):
+
+def preprocess_text(text):
 
     tokens = [
-        ord(c) % 256
-        for c in text.lower()
+        vocab.get(
+            word.lower(),
+            vocab["<UNK>"]
+        )
+        for word in text.split()
     ]
 
-    # Limit sequence length
-    tokens = tokens[:100]
+    tokens = tokens[:MAX_LENGTH]
 
-    # Pad sequence
-    if len(tokens) < 100:
-        tokens += [0] * (100 - len(tokens))
+    if len(tokens) < MAX_LENGTH:
+        tokens += [
+            vocab["<PAD>"]
+        ] * (MAX_LENGTH - len(tokens))
 
-    return tokens
+    return torch.tensor(
+        [tokens],
+        dtype=torch.long
+    )
 
 
 # -----------------------------
 # Prediction
 # -----------------------------
-def predict_news(text):
 
-    input_data = simple_tokenizer(text)
+def predict(text):
 
-    input_tensor = torch.tensor(
-        [input_data],
-        dtype=torch.long
-    )
+    input_tensor = preprocess_text(text)
 
     with torch.no_grad():
 
         output = model(input_tensor)
 
-        probability = torch.sigmoid(output).item()
+        probabilities = torch.exp(output)
 
-    return probability
+        prediction = torch.argmax(
+            probabilities,
+            dim=1
+        ).item()
+
+        confidence = probabilities[
+            0, prediction
+        ].item()
+
+    return prediction, confidence
 
 
 # -----------------------------
 # UI
 # -----------------------------
+
 st.title("📰 Fake News Detection")
 
 st.write(
-    "An LSTM-based PyTorch model for "
-    "text classification."
+    "LSTM-based text classification using PyTorch"
 )
 
 st.divider()
 
+
 news_text = st.text_area(
     "Enter a news article or headline:",
-    height=200,
-    placeholder="Paste news text here..."
+    height=220,
+    placeholder=(
+        "Paste a news headline or article here..."
+    )
 )
 
 
-if st.button("🔍 Analyze News", use_container_width=True):
+if st.button(
+    "🔍 Analyze News",
+    use_container_width=True
+):
 
     if not news_text.strip():
 
-        st.warning("Please enter some news text.")
+        st.warning(
+            "Please enter some news text first."
+        )
 
     else:
 
-        probability = predict_news(news_text)
+        prediction, confidence = predict(
+            news_text
+        )
 
-        st.subheader("Prediction")
+        st.subheader("Result")
 
-        if probability > 0.5:
+        if prediction == 1:
 
-            st.success("🟢 Likely REAL news")
+            st.success(
+                "🟢 Likely REAL news"
+            )
 
         else:
 
-            st.error("🔴 Likely FAKE news")
+            st.error(
+                "🔴 Likely FAKE news"
+            )
 
         st.metric(
-            "Model Score",
-            f"{probability:.2%}"
+            "Model Confidence",
+            f"{confidence:.2%}"
         )
 
 
@@ -131,5 +186,6 @@ st.divider()
 
 st.caption(
     "⚠️ Research/demo model. "
-    "Predictions should not be treated as definitive fact-checking."
+    "This prediction should not be treated "
+    "as definitive fact-checking."
 )
